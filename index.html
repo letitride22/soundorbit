@@ -253,6 +253,15 @@ input[type=range]{flex:1;accent-color:var(--purple);height:2px}
       <button class="dl-pill" id="dlBtn" disabled onclick="downloadTrack()">↓ WAV</button>
     </div>
 
+    <div id="panMeter" style="display:none;align-items:center;gap:8px;margin:8px 0;padding:6px 10px;background:var(--bg3);border-radius:6px">
+      <span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);min-width:24px">L</span>
+      <div style="flex:1;height:6px;background:var(--bg);border-radius:3px;position:relative">
+        <div id="panFill" style="position:absolute;height:100%;background:var(--purple);border-radius:3px;left:50%;width:1px;transform:translateX(-50%);transition:left 0.1s,width 0.1s"></div>
+        <div style="position:absolute;left:50%;top:-2px;width:1px;height:10px;background:var(--border2)"></div>
+      </div>
+      <span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);min-width:24px;text-align:right">R</span>
+      <span id="panVal" style="font-size:10px;font-family:'DM Mono',monospace;color:var(--purple);min-width:40px;text-align:right">0.00</span>
+    </div>
     <div class="sliders-toggle" onclick="toggleSliders()">
       <span id="slidersArrow">▴</span> <span>8D settings</span>
     </div>
@@ -481,6 +490,7 @@ dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag
 // and replaying tracks never breaks
 
 let lfoNode = null;        // OscillatorNode driving the pan
+let panner = null;         // StereoPannerNode
 let lfoGainL = null;       // scales LFO into left channel gain
 let lfoGainR = null;       // scales LFO into right channel gain
 let reverbNode = null;
@@ -512,7 +522,8 @@ function teardownGraph() {
   // Disconnect and stop all nodes cleanly
   if (lfoNode)    { try { lfoNode.stop();    } catch(e){} lfoNode    = null; }
   if (sourceNode) { try { sourceNode.stop(); } catch(e){} sourceNode = null; }
-  lfoGainL = lfoGainR = reverbNode = analyserNode = null;
+  lfoGainL = lfoGainR = reverbNode = analyserNode = panner = null;
+  document.getElementById('panMeter').style.display = 'none';
 }
 
 function buildGraphAndPlay(offset) {
@@ -541,7 +552,7 @@ function buildGraphAndPlay(offset) {
   bassFilter.gain.value = bass;
 
   // ── StereoPanner driven by LFO ────────────────────────
-  const panner = audioCtx.createStereoPanner();
+  panner = audioCtx.createStereoPanner();
   panner.pan.value = 0;
 
   const lfo = audioCtx.createOscillator();
@@ -606,6 +617,7 @@ function buildGraphAndPlay(offset) {
   document.getElementById('playMain').textContent = '⏸';
   document.getElementById('npSpin').classList.add('active');
   document.getElementById('dlBtn').disabled = false;
+  document.getElementById('panMeter').style.display = 'flex';
   drawViz();
   updateProg();
   toast('Playing 8D audio');
@@ -665,6 +677,21 @@ function updateProg() {
   const dur = trackDuration;
   document.getElementById('progFill').style.width = Math.min(el/dur*100,100)+'%';
   document.getElementById('progTime').textContent = fmt(el)+' / '+fmt(dur);
+  // Update pan meter
+  if (panner) {
+    const p = panner.pan.value; // -1 to +1
+    const pct = (p + 1) / 2 * 100; // 0-100%
+    const fill = document.getElementById('panFill');
+    const center = 50;
+    if (p >= 0) {
+      fill.style.left = center + '%';
+      fill.style.width = (pct - center) + '%';
+    } else {
+      fill.style.left = pct + '%';
+      fill.style.width = (center - pct) + '%';
+    }
+    document.getElementById('panVal').textContent = (p >= 0 ? '+' : '') + p.toFixed(3);
+  }
   progId = requestAnimationFrame(updateProg);
 }
 
