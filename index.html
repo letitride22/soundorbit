@@ -259,18 +259,18 @@ input[type=range]{flex:1;accent-color:var(--purple);height:2px}
     <div class="sliders-panel open" id="slidersPanel">
       <div class="sl-row">
         <span class="sl-label">Rotation</span>
-        <input type="range" id="slPan" min="1" max="20" step="1" value="5" oninput="sliderChanged()">
-        <span class="sl-val" id="slPanV">5</span>
+        <input type="range" id="slPan" min="1" max="20" step="1" value="4" oninput="sliderChanged()">
+        <span class="sl-val" id="slPanV">0.09Hz</span>
       </div>
       <div class="sl-row">
         <span class="sl-label">Depth</span>
-        <input type="range" id="slDep" min="10" max="100" step="1" value="80" oninput="sliderChanged()">
-        <span class="sl-val" id="slDepV">80%</span>
+        <input type="range" id="slDep" min="10" max="100" step="1" value="90" oninput="sliderChanged()">
+        <span class="sl-val" id="slDepV">90%</span>
       </div>
       <div class="sl-row">
         <span class="sl-label">Reverb</span>
-        <input type="range" id="slRev" min="0" max="100" step="1" value="40" oninput="sliderChanged()">
-        <span class="sl-val" id="slRevV">40%</span>
+        <input type="range" id="slRev" min="0" max="100" step="1" value="55" oninput="sliderChanged()">
+        <span class="sl-val" id="slRevV">55%</span>
       </div>
       <div class="sl-row">
         <span class="sl-label">Bass</span>
@@ -480,53 +480,93 @@ function makeImpulse(ctx, dur, dec) {
 async function applyAndPlay() {
   if (!rawBuffer) return;
   toast('Applying 8D…');
-  const rate = +document.getElementById('slPan').value;
+
+  // Rotation: slider 1-20 maps to 0.03-0.4 Hz (slow dreamy orbit feel)
+  const sliderRate = +document.getElementById('slPan').value;
+  const hz = 0.03 + (sliderRate - 1) / 19 * 0.37;
   const depth = +document.getElementById('slDep').value / 100;
   const rev = +document.getElementById('slRev').value / 100;
   const bass = +document.getElementById('slBas').value;
 
   const sr = rawBuffer.sampleRate;
   const len = rawBuffer.length;
+  const dur = rawBuffer.duration;
   const off = new OfflineAudioContext(2, len, sr);
 
-  // Bass boost
+  // ── Bass boost ────────────────────────────────────────
   const bf = off.createBiquadFilter();
-  bf.type = 'lowshelf'; bf.frequency.value = 120; bf.gain.value = bass;
+  bf.type = 'lowshelf'; bf.frequency.value = 100; bf.gain.value = bass;
 
-  // Use ChannelSplitter + individual GainNodes for reliable panning
-  // StereoPanner.setValueCurveAtTime is broken in many browsers
+  // ── Presence boost (air/clarity) ──────────────────────
+  const presence = off.createBiquadFilter();
+  presence.type = 'highshelf'; presence.frequency.value = 8000; presence.gain.value = 2;
+
+  // ── Inter-aural delay: simulates sound traveling around head ──
+  // Real human head is ~17cm across; speed of sound ~343m/s
+  // Max ITD = 0.17/343 = ~0.63ms. We exaggerate slightly for effect.
+  const maxDelaySec = 0.0008; // 0.8ms max inter-aural delay
+  const delayL = off.createDelay(0.01);
+  const delayR = off.createDelay(0.01);
+
+  // ── Equal-power pan + ITD curves ──────────────────────
+  const period = sr / hz; // samples per full orbit
+  const curveL = new Float32Array(len);
+  const curveR = new Float32Array(len);
+  const delCurveL = new Float32Array(len);
+  const delCurveR = new Float32Array(len);
+
+  for (let i = 0; i < len; i++) {
+    // pan: -1 = full left, +1 = full right, sine wave orbit
+    const pan = Math.sin(2 * Math.PI * i / period) * depth;
+    // equal-power panning
+    const angle = (pan + 1) * Math.PI / 4;
+    curveL[i] = Math.cos(angle);
+    curveR[i] = Math.sin(angle);
+    // ITD: when sound is to the left, right ear is delayed and vice versa
+    // pan=-1 (full left): delayR is max, delayL is 0
+    // pan=+1 (full right): delayL is max, delayR is 0
+    delCurveL[i] = Math.max(0, pan) * maxDelaySec;   // left delayed when sound is right
+    delCurveR[i] = Math.max(0, -pan) * maxDelaySec;  // right delayed when sound is left
+  }
+
+  // ── Splitter/merger for per-channel control ───────────
   const splitter = off.createChannelSplitter(2);
   const merger = off.createChannelMerger(2);
   const gainL = off.createGain();
   const gainR = off.createGain();
 
-  // Equal-power pan curves
-  const period = sr / rate;
-  const curveL = new Float32Array(len);
-  const curveR = new Float32Array(len);
-  for (let i = 0; i < len; i++) {
-    const pan = Math.sin(2 * Math.PI * i / period) * depth;
-    const angle = (pan + 1) * Math.PI / 4;
-    curveL[i] = Math.cos(angle);
-    curveR[i] = Math.sin(angle);
-  }
-  gainL.gain.setValueCurveAtTime(curveL, 0, rawBuffer.duration);
-  gainR.gain.setValueCurveAtTime(curveR, 0, rawBuffer.duration);
+  gainL.gain.setValueCurveAtTime(curveL, 0, dur);
+  gainR.gain.setValueCurveAtTime(curveR, 0, dur);
+  delayL.delayTime.setValueCurveAtTime(delCurveL, 0, dur);
+  delayR.delayTime.setValueCurveAtTime(delCurveR, 0, dur);
 
-  // Reverb for spatial depth
-  const conv = off.createConvolver(); conv.buffer = makeImpulse(off, 2.5, 2.5);
-  const dry = off.createGain(); dry.gain.value = 1 - rev * 0.65;
-  const wet = off.createGain(); wet.gain.value = rev * 0.65;
+  // ── Reverb: large hall feel ───────────────────────────
+  const conv = off.createConvolver();
+  conv.buffer = makeImpulse(off, 3.5, 2.0); // longer tail = bigger space
+  const dry = off.createGain(); dry.gain.value = 1 - rev * 0.7;
+  const wet = off.createGain(); wet.gain.value = rev * 0.55;
 
+  // ── Signal chain ──────────────────────────────────────
+  // src -> bass -> presence -> splitter
+  //   left:  splitter[0] -> gainL -> delayL -> merger[0]
+  //   right: splitter[1] -> gainR -> delayR -> merger[1]
+  // merger -> dry -> destination
+  // merger -> conv -> wet -> destination
   const src = off.createBufferSource(); src.buffer = rawBuffer;
 
-  // Chain: src -> bass -> splitter -> gainL/R -> merger -> dry+wet -> destination
   src.connect(bf);
-  bf.connect(splitter);
+  bf.connect(presence);
+  presence.connect(splitter);
+
   splitter.connect(gainL, 0);
   splitter.connect(gainR, 1);
-  gainL.connect(merger, 0, 0);
-  gainR.connect(merger, 0, 1);
+
+  gainL.connect(delayL);
+  gainR.connect(delayR);
+
+  delayL.connect(merger, 0, 0);
+  delayR.connect(merger, 0, 1);
+
   merger.connect(dry);
   merger.connect(conv);
   conv.connect(wet);
@@ -653,7 +693,9 @@ function toggleSliders() {
 }
 
 function sliderChanged() {
-  document.getElementById('slPanV').textContent = document.getElementById('slPan').value;
+  const sliderRate = +document.getElementById('slPan').value;
+  const hz = (0.03 + (sliderRate - 1) / 19 * 0.37).toFixed(2);
+  document.getElementById('slPanV').textContent = hz + 'Hz';
   document.getElementById('slDepV').textContent = document.getElementById('slDep').value + '%';
   document.getElementById('slRevV').textContent = document.getElementById('slRev').value + '%';
   document.getElementById('slBasV').textContent = '+' + document.getElementById('slBas').value + 'dB';
