@@ -260,7 +260,7 @@ input[type=range]{flex:1;accent-color:var(--purple);height:2px}
       <div class="sl-row">
         <span class="sl-label">Rotation</span>
         <input type="range" id="slPan" min="1" max="20" step="1" value="5" oninput="sliderChanged()">
-        <span class="sl-val" id="slPanV">0.04Hz</span>
+        <span class="sl-val" id="slPanV">0.021Hz</span>
       </div>
       <div class="sl-row">
         <span class="sl-label">Depth</span>
@@ -488,8 +488,9 @@ let trackDuration = 0;
 
 function getSettings() {
   const sliderRate = +document.getElementById('slPan').value;
-  // 1→20 maps to 0.01→0.12 Hz  (one orbit every 8–100 seconds)
-  const hz = 0.01 + (sliderRate - 1) / 19 * 0.11;
+  // 1→20 maps to 0.005→0.08 Hz (one orbit every 12–200 seconds)
+  // default value=5 → 0.005 + 4/19*0.075 = ~0.021 Hz = ~48s per orbit
+  const hz = 0.005 + (sliderRate - 1) / 19 * 0.075;
   const depth = +document.getElementById('slDep').value / 100;
   const rev   = +document.getElementById('slRev').value / 100;
   const bass  = +document.getElementById('slBas').value;
@@ -526,33 +527,36 @@ function buildGraphAndPlay(offset) {
   src.buffer = rawBuffer;
   sourceNode = src;
 
+  // ── Merge stereo → mono so panner has full control ───
+  // Stereo preview files have their own L/R mix which fights the panner.
+  // Summing to mono first lets the StereoPanner sweep the full -1..+1 range cleanly.
+  const merger = audioCtx.createChannelMerger(2);
+  const monoGain = audioCtx.createGain();
+  monoGain.gain.value = 0.5; // prevent clipping when summing L+R
+
   // ── Bass boost ────────────────────────────────────────
   const bassFilter = audioCtx.createBiquadFilter();
   bassFilter.type = 'lowshelf';
   bassFilter.frequency.value = 100;
   bassFilter.gain.value = bass;
 
-  // ── StereoPanner: pan AudioParam goes -1 (left) to +1 (right) ──
-  // We drive it with an LFO oscillator connected directly to pan param.
-  // This is the correct Web Audio approach for live panning.
+  // ── StereoPanner driven by LFO ────────────────────────
   const panner = audioCtx.createStereoPanner();
-  panner.pan.value = 0; // start center
+  panner.pan.value = 0;
 
-  // ── LFO drives panner.pan directly ───────────────────
-  // OscillatorNode output is -1..+1, multiply by depth for range
   const lfo = audioCtx.createOscillator();
   lfo.type = 'sine';
-  lfo.frequency.value = hz;  // e.g. 0.02 Hz = 1 orbit per 50 seconds
+  lfo.frequency.value = hz;
 
   const lfoDepth = audioCtx.createGain();
-  lfoDepth.gain.value = depth; // scale LFO: depth=1.0 means full -1..+1 pan sweep
-  lfoGainL = lfoDepth; // store ref so slider can update it
+  lfoDepth.gain.value = depth;
+  lfoGainL = lfoDepth;
 
   lfo.connect(lfoDepth);
-  lfoDepth.connect(panner.pan); // LFO → pan param directly
+  lfoDepth.connect(panner.pan);
   lfoNode = lfo;
 
-  // ── Reverb (hall feel) ────────────────────────────────
+  // ── Reverb ────────────────────────────────────────────
   const conv = audioCtx.createConvolver();
   conv.buffer = makeImpulseRT(3.5, 2.0);
   reverbNode = conv;
@@ -565,8 +569,9 @@ function buildGraphAndPlay(offset) {
   analyserNode = an;
 
   // ── Signal chain ──────────────────────────────────────
-  // src → bass → panner → analyser → dry+wet → destination
-  src.connect(bassFilter);
+  // src → monoGain (sum L+R) → bass → panner(LFO) → analyser → dry+wet → out
+  src.connect(monoGain);
+  monoGain.connect(bassFilter);
   bassFilter.connect(panner);
   panner.connect(an);
   an.connect(dry);
@@ -721,7 +726,7 @@ function toggleSliders() {
 
 function sliderChanged() {
   const sliderRate = +document.getElementById('slPan').value;
-  const hz = (0.01 + (sliderRate - 1) / 19 * 0.11).toFixed(3);
+  const hz = (0.005 + (sliderRate - 1) / 19 * 0.075).toFixed(3);
   document.getElementById('slPanV').textContent = hz + 'Hz';
   document.getElementById('slDepV').textContent = document.getElementById('slDep').value + '%';
   document.getElementById('slRevV').textContent = document.getElementById('slRev').value + '%';
