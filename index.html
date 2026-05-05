@@ -69,7 +69,7 @@ body{display:flex;flex-direction:column}
 .search-ico:hover{color:var(--purple)}
 
 /* results */
-.results-area{flex:1;overflow-y:auto;padding:12px 20px;display:none}
+.results-area{flex:1;min-height:0;overflow-y:auto;padding:12px 20px;display:none}
 .results-area.visible{display:block}
 .result-item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:var(--radius-sm);cursor:pointer;transition:background 0.15s;border:1px solid transparent}
 .result-item:hover{background:var(--surface);border-color:var(--border)}
@@ -83,7 +83,7 @@ body{display:flex;flex-direction:column}
 .result-action.saved{background:var(--purple-dim);border-color:var(--purple);color:var(--purple)}
 
 /* playlist */
-.playlist-area{flex:1;overflow-y:auto;padding:12px 20px;display:none}
+.playlist-area{flex:1;min-height:0;overflow-y:auto;padding:12px 20px;display:none}
 .playlist-area.visible{display:block}
 .pl-header{font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px}
 .pl-item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:var(--radius-sm);cursor:pointer;transition:background 0.15s;border:1px solid transparent}
@@ -98,7 +98,7 @@ body{display:flex;flex-direction:column}
 .empty-hint strong{display:block;font-size:22px;margin-bottom:8px;color:var(--text2)}
 
 /* upload area */
-.upload-area{flex:1;overflow-y:auto;padding:12px 20px;display:none}
+.upload-area{flex:1;min-height:0;overflow-y:auto;padding:12px 20px;display:none}
 .upload-area.visible{display:block}
 .drop-zone{border:2px dashed var(--border2);border-radius:var(--radius);padding:3rem 2rem;text-align:center;cursor:pointer;transition:all 0.2s;margin-bottom:16px}
 .drop-zone:hover,.drop-zone.drag{border-color:var(--purple);background:var(--purple-dim)}
@@ -111,7 +111,7 @@ body{display:flex;flex-direction:column}
 .upload-name{font-size:13px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* now playing */
-.now-playing{background:var(--bg2);border-top:1px solid var(--border);padding:16px 20px;padding-bottom:max(env(safe-area-inset-bottom),16px)}
+.now-playing{background:var(--bg2);border-top:1px solid var(--border);padding:16px 20px;padding-bottom:max(env(safe-area-inset-bottom),16px);flex-shrink:0;overflow-y:auto;max-height:60vh}
 .np-top{display:flex;align-items:center;gap:12px;margin-bottom:14px}
 .np-art-wrap{position:relative;width:52px;height:52px;flex-shrink:0}
 .np-art{width:52px;height:52px;border-radius:10px;object-fit:cover;background:var(--bg3)}
@@ -149,8 +149,8 @@ canvas#mainViz{display:block;width:100%;height:60px;border-radius:8px}
 /* sliders panel */
 .sliders-toggle{display:flex;align-items:center;justify-content:center;gap:6px;font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);cursor:pointer;margin-top:12px;padding:6px;border-top:1px solid var(--border)}
 .sliders-toggle:hover{color:var(--text2)}
-.sliders-panel{display:none;padding-top:12px;gap:10px;flex-direction:column}
-.sliders-panel.open{display:flex}
+.sliders-panel{display:flex;padding-top:12px;gap:10px;flex-direction:column;overflow:hidden;max-height:200px;transition:max-height 0.25s ease}
+.sliders-panel.closed{max-height:0;padding-top:0}
 .sl-row{display:flex;align-items:center;gap:10px}
 .sl-label{font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);min-width:72px;text-transform:uppercase;letter-spacing:0.5px}
 .sl-val{font-size:10px;font-family:'DM Mono',monospace;color:var(--purple2);min-width:32px;text-align:right}
@@ -256,7 +256,7 @@ input[type=range]{flex:1;accent-color:var(--purple);height:2px}
     <div class="sliders-toggle" onclick="toggleSliders()">
       <span id="slidersArrow">▴</span> <span>8D settings</span>
     </div>
-    <div class="sliders-panel open" id="slidersPanel">
+    <div class="sliders-panel" id="slidersPanel">
       <div class="sl-row">
         <span class="sl-label">Rotation</span>
         <input type="range" id="slPan" min="1" max="20" step="1" value="5" oninput="sliderChanged()">
@@ -521,71 +521,61 @@ function buildGraphAndPlay(offset) {
   const { hz, depth, rev, bass } = getSettings();
   const now = audioCtx.currentTime;
 
-  // ── Source ───────────────────────────────────────────
+  // ── Source ────────────────────────────────────────────
   const src = audioCtx.createBufferSource();
   src.buffer = rawBuffer;
   sourceNode = src;
 
-  // ── Bass boost ───────────────────────────────────────
+  // ── Bass boost ────────────────────────────────────────
   const bassFilter = audioCtx.createBiquadFilter();
   bassFilter.type = 'lowshelf';
   bassFilter.frequency.value = 100;
   bassFilter.gain.value = bass;
 
-  // ── Splitter → per-channel gain → merger ─────────────
-  // LFO drives gainL and gainR 90° out of phase for smooth orbit
-  const splitter = audioCtx.createChannelSplitter(2);
-  const merger   = audioCtx.createChannelMerger(2);
+  // ── StereoPanner: pan AudioParam goes -1 (left) to +1 (right) ──
+  // We drive it with an LFO oscillator connected directly to pan param.
+  // This is the correct Web Audio approach for live panning.
+  const panner = audioCtx.createStereoPanner();
+  panner.pan.value = 0; // start center
 
-  // gainL and gainR start at 0.5 (center), LFO sweeps them
-  const gL = audioCtx.createGain(); gL.gain.value = 0.707;
-  const gR = audioCtx.createGain(); gR.gain.value = 0.707;
-  lfoGainL = gL; lfoGainR = gR;
-
-  // ── LFO (sine oscillator) ────────────────────────────
-  // One LFO drives left channel, inverted to drive right
-  // This gives the clean left→right→left orbit
+  // ── LFO drives panner.pan directly ───────────────────
+  // OscillatorNode output is -1..+1, multiply by depth for range
   const lfo = audioCtx.createOscillator();
   lfo.type = 'sine';
-  lfo.frequency.value = hz;
+  lfo.frequency.value = hz;  // e.g. 0.02 Hz = 1 orbit per 50 seconds
 
-  // LFO amplitude = depth * 0.65 (so gain stays 0.05..1.0 range)
-  const lfoAmpL = audioCtx.createGain();
-  const lfoAmpR = audioCtx.createGain();
-  lfoAmpL.gain.value =  depth * 0.65;
-  lfoAmpR.gain.value = -depth * 0.65;  // inverted = opposite ear
+  const lfoDepth = audioCtx.createGain();
+  lfoDepth.gain.value = depth; // scale LFO: depth=1.0 means full -1..+1 pan sweep
+  lfoGainL = lfoDepth; // store ref so slider can update it
 
-  lfo.connect(lfoAmpL); lfoAmpL.connect(gL.gain);
-  lfo.connect(lfoAmpR); lfoAmpR.connect(gR.gain);
+  lfo.connect(lfoDepth);
+  lfoDepth.connect(panner.pan); // LFO → pan param directly
   lfoNode = lfo;
 
-  // ── Reverb ───────────────────────────────────────────
+  // ── Reverb (hall feel) ────────────────────────────────
   const conv = audioCtx.createConvolver();
   conv.buffer = makeImpulseRT(3.5, 2.0);
   reverbNode = conv;
-
   const dry = audioCtx.createGain(); dry.gain.value = 1 - rev * 0.65;
   const wet = audioCtx.createGain(); wet.gain.value = rev * 0.50;
 
-  // ── Analyser for visualizer ───────────────────────────
-  const an = audioCtx.createAnalyser(); an.fftSize = 512;
+  // ── Analyser ──────────────────────────────────────────
+  const an = audioCtx.createAnalyser();
+  an.fftSize = 512;
   analyserNode = an;
 
-  // ── Connect graph ─────────────────────────────────────
+  // ── Signal chain ──────────────────────────────────────
+  // src → bass → panner → analyser → dry+wet → destination
   src.connect(bassFilter);
-  bassFilter.connect(splitter);
-  splitter.connect(gL, 0);   // left channel  → gainL
-  splitter.connect(gR, 1);   // right channel → gainR
-  gL.connect(merger, 0, 0);
-  gR.connect(merger, 0, 1);
-  merger.connect(an);
+  bassFilter.connect(panner);
+  panner.connect(an);
   an.connect(dry);
   an.connect(conv);
   conv.connect(wet);
   dry.connect(audioCtx.destination);
   wet.connect(audioCtx.destination);
 
-  // ── Start ─────────────────────────────────────────────
+  // ── Start nodes ───────────────────────────────────────
   lfo.start(now);
   src.start(now, offset);
   startTime = now - offset;
@@ -725,7 +715,7 @@ function drawViz() {
 // ── Sliders ───────────────────────────────────────────
 function toggleSliders() {
   slidersOpen = !slidersOpen;
-  document.getElementById('slidersPanel').classList.toggle('open', slidersOpen);
+  document.getElementById('slidersPanel').classList.toggle('closed', !slidersOpen);
   document.getElementById('slidersArrow').textContent = slidersOpen ? '▴' : '▾';
 }
 
@@ -736,12 +726,11 @@ function sliderChanged() {
   document.getElementById('slDepV').textContent = document.getElementById('slDep').value + '%';
   document.getElementById('slRevV').textContent = document.getElementById('slRev').value + '%';
   document.getElementById('slBasV').textContent = '+' + document.getElementById('slBas').value + 'dB';
-  // Update live LFO instantly if playing - no need to restart
+  // Update live LFO instantly - no restart needed
   if (lfoNode && isPlaying) {
-    const { hz: newHz, depth } = getSettings();
+    const { hz: newHz, depth: newDepth } = getSettings();
     lfoNode.frequency.value = newHz;
-    if (lfoGainL) lfoGainL.gain.value = 0.707;
-    if (lfoGainR) lfoGainR.gain.value = 0.707;
+    if (lfoGainL) lfoGainL.gain.value = newDepth; // lfoGainL = lfoDepth gain node
   }
 }
 
