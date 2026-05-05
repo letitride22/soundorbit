@@ -538,12 +538,13 @@ function buildGraphAndPlay(offset) {
   src.buffer = rawBuffer;
   sourceNode = src;
 
-  // ── Merge stereo → mono so panner has full control ───
-  // Stereo preview files have their own L/R mix which fights the panner.
-  // Summing to mono first lets the StereoPanner sweep the full -1..+1 range cleanly.
-  const merger = audioCtx.createChannelMerger(2);
-  const monoGain = audioCtx.createGain();
-  monoGain.gain.value = 0.5; // prevent clipping when summing L+R
+  // ── True mono sum: split L+R → sum into single channel ─
+  // A plain GainNode does NOT sum stereo to mono - it passes both channels through.
+  // Must explicitly: splitter → two gains (0.5 each) → channelMerger(1) → mono
+  const splitter = audioCtx.createChannelSplitter(2);
+  const sumL = audioCtx.createGain(); sumL.gain.value = 0.5;
+  const sumR = audioCtx.createGain(); sumR.gain.value = 0.5;
+  const monoMerger = audioCtx.createChannelMerger(1);
 
   // ── Bass boost ────────────────────────────────────────
   const bassFilter = audioCtx.createBiquadFilter();
@@ -580,9 +581,13 @@ function buildGraphAndPlay(offset) {
   analyserNode = an;
 
   // ── Signal chain ──────────────────────────────────────
-  // src → monoGain (sum L+R) → bass → panner(LFO) → analyser → dry+wet → out
-  src.connect(monoGain);
-  monoGain.connect(bassFilter);
+  // src → split L and R → each scaled 0.5 → sum into mono → bass
+  src.connect(splitter);
+  splitter.connect(sumL, 0);       // left channel
+  splitter.connect(sumR, 1);       // right channel
+  sumL.connect(monoMerger, 0, 0);  // both into channel 0 of merger
+  sumR.connect(monoMerger, 0, 0);
+  monoMerger.connect(bassFilter);
   bassFilter.connect(panner);
   panner.connect(an);
   an.connect(dry);
