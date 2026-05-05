@@ -254,9 +254,9 @@ input[type=range]{flex:1;accent-color:var(--purple);height:2px}
     </div>
 
     <div class="sliders-toggle" onclick="toggleSliders()">
-      <span id="slidersArrow">▾</span> <span>8D settings</span>
+      <span id="slidersArrow">▴</span> <span>8D settings</span>
     </div>
-    <div class="sliders-panel" id="slidersPanel">
+    <div class="sliders-panel open" id="slidersPanel">
       <div class="sl-row">
         <span class="sl-label">Rotation</span>
         <input type="range" id="slPan" min="1" max="20" step="1" value="5" oninput="sliderChanged()">
@@ -296,7 +296,7 @@ let searchResults = [];
 let currentIdx = -1;
 let uploadedFiles = [];
 let sliderDebounce = null;
-let slidersOpen = false;
+let slidersOpen = true;
 let currentTab = 'search';
 let deferredInstall = null;
 
@@ -484,19 +484,55 @@ async function applyAndPlay() {
   const depth = +document.getElementById('slDep').value / 100;
   const rev = +document.getElementById('slRev').value / 100;
   const bass = +document.getElementById('slBas').value;
-  const off = new OfflineAudioContext(2, rawBuffer.length, rawBuffer.sampleRate);
+
+  const sr = rawBuffer.sampleRate;
+  const len = rawBuffer.length;
+  const off = new OfflineAudioContext(2, len, sr);
+
+  // Bass boost
+  const bf = off.createBiquadFilter();
+  bf.type = 'lowshelf'; bf.frequency.value = 120; bf.gain.value = bass;
+
+  // Use ChannelSplitter + individual GainNodes for reliable panning
+  // StereoPanner.setValueCurveAtTime is broken in many browsers
+  const splitter = off.createChannelSplitter(2);
+  const merger = off.createChannelMerger(2);
+  const gainL = off.createGain();
+  const gainR = off.createGain();
+
+  // Equal-power pan curves
+  const period = sr / rate;
+  const curveL = new Float32Array(len);
+  const curveR = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const pan = Math.sin(2 * Math.PI * i / period) * depth;
+    const angle = (pan + 1) * Math.PI / 4;
+    curveL[i] = Math.cos(angle);
+    curveR[i] = Math.sin(angle);
+  }
+  gainL.gain.setValueCurveAtTime(curveL, 0, rawBuffer.duration);
+  gainR.gain.setValueCurveAtTime(curveR, 0, rawBuffer.duration);
+
+  // Reverb for spatial depth
+  const conv = off.createConvolver(); conv.buffer = makeImpulse(off, 2.5, 2.5);
+  const dry = off.createGain(); dry.gain.value = 1 - rev * 0.65;
+  const wet = off.createGain(); wet.gain.value = rev * 0.65;
+
   const src = off.createBufferSource(); src.buffer = rawBuffer;
-  const bf = off.createBiquadFilter(); bf.type = 'lowshelf'; bf.frequency.value = 120; bf.gain.value = bass;
-  const pan = off.createStereoPanner();
-  const curve = new Float32Array(rawBuffer.length);
-  const period = rawBuffer.sampleRate / rate;
-  for (let i = 0; i < rawBuffer.length; i++) curve[i] = Math.sin(2 * Math.PI * i / period) * depth;
-  pan.pan.setValueCurveAtTime(curve, 0, rawBuffer.duration);
-  const conv = off.createConvolver(); conv.buffer = makeImpulse(off, 2, 2.5);
-  const dry = off.createGain(); dry.gain.value = 1 - rev * 0.6;
-  const wet = off.createGain(); wet.gain.value = rev * 0.6;
-  src.connect(bf); bf.connect(pan); pan.connect(dry); pan.connect(conv); conv.connect(wet);
-  dry.connect(off.destination); wet.connect(off.destination);
+
+  // Chain: src -> bass -> splitter -> gainL/R -> merger -> dry+wet -> destination
+  src.connect(bf);
+  bf.connect(splitter);
+  splitter.connect(gainL, 0);
+  splitter.connect(gainR, 1);
+  gainL.connect(merger, 0, 0);
+  gainR.connect(merger, 0, 1);
+  merger.connect(dry);
+  merger.connect(conv);
+  conv.connect(wet);
+  dry.connect(off.destination);
+  wet.connect(off.destination);
+
   src.start(0);
   processedBuffer = await off.startRendering();
   document.getElementById('dlBtn').disabled = false;
