@@ -1,7 +1,5 @@
-const CACHE = '8dstream-v1';
+const CACHE = '8dstream-v9'; // bump this number every time you deploy a new version
 const STATIC = [
-  '/',
-  '/index.html',
   '/manifest.json',
   'https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&display=swap'
 ];
@@ -26,9 +24,24 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
-  // Deezer API — network only (no caching, CORS)
+  // Deezer API — always network, never cache
   if (url.hostname.includes('deezer.com') || url.hostname.includes('dzcdn.net')) {
     e.respondWith(fetch(e.request).catch(() => new Response('', { status: 503 })));
+    return;
+  }
+
+  // index.html — ALWAYS fetch fresh from network so updates deploy instantly
+  // Fall back to cache only if offline
+  if (url.pathname === '/' || url.pathname.endsWith('index.html')) {
+    e.respondWith(
+      fetch(e.request)
+        .then(resp => {
+          const clone = resp.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+          return resp;
+        })
+        .catch(() => caches.match(e.request))
+    );
     return;
   }
 
@@ -44,17 +57,16 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // App shell — cache first, network fallback
+  // Everything else — network first, cache fallback
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      if (cached) return cached;
-      return fetch(e.request).then(resp => {
+    fetch(e.request)
+      .then(resp => {
         if (resp.ok && e.request.method === 'GET') {
           const clone = resp.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
         return resp;
-      }).catch(() => caches.match('/index.html'));
-    })
+      })
+      .catch(() => caches.match(e.request))
   );
 });
